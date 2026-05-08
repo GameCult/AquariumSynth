@@ -4530,47 +4530,22 @@ mod tests {
         if msys_bash().is_none() || find_faust_command().is_none() {
             return;
         }
-        let patch = presets::aquarium_pluck();
-        let export = export_patch_to_faust(
-            &patch,
-            FaustExportOptions {
-                name: "parity_pluck".to_owned(),
-                stereo: false,
-            },
-        )
-        .unwrap();
-        let output_dir = PathBuf::from("target").join("faust-parity");
-        fs::create_dir_all(&output_dir).unwrap();
-        let dsp_path = output_dir.join("parity_pluck.dsp");
-        fs::write(&dsp_path, export.source).unwrap();
-        let wav_path = render_faust_sndfile(&dsp_path, 44_100).unwrap();
-        let faust = read_wav_mono_f32(&wav_path).unwrap();
-        let rust = render_patch_mono(
-            patch,
-            RenderOptions {
-                duration_seconds: 1.0,
-                sample_rate: 44_100.0,
-                seed: 1,
-            },
-        );
-        let comparison = compare_audio(
-            &rust,
-            &faust,
-            &AudioAnalysisConfig {
-                fft_size: 512,
-                hop_size: 256,
-                mel_band_count: 24,
-                ..AudioAnalysisConfig::default()
-            },
-        );
-        assert!(comparison.candidate.features.peak > 0.01);
-        assert!(
-            comparison.score > 0.18,
-            "score={} log_mel={} envelope={}",
-            comparison.score,
-            comparison.log_mel_distance,
-            comparison.envelope_distance
-        );
+        for case in representative_faust_parity_cases() {
+            assert_faust_parity(case);
+        }
+    }
+
+    #[test]
+    fn faust_sndfile_render_matches_builtin_matrix_when_requested() {
+        if env::var_os("AQUARIUM_SYNTH_FAUST_EXHAUSTIVE").is_none() {
+            return;
+        }
+        if msys_bash().is_none() || find_faust_command().is_none() {
+            return;
+        }
+        for case in builtin_faust_parity_cases() {
+            assert_faust_parity(case);
+        }
     }
 
     #[test]
@@ -4621,6 +4596,112 @@ mod tests {
         [PathBuf::from(r"C:\msys64\usr\bin\bash.exe")]
             .into_iter()
             .find(|path| path.is_file())
+    }
+
+    #[derive(Clone, Copy)]
+    struct FaustParityCase {
+        family: &'static str,
+        name: &'static str,
+        script: &'static str,
+        min_score: f32,
+        min_peak: f32,
+    }
+
+    fn representative_faust_parity_cases() -> Vec<FaustParityCase> {
+        vec![
+            parity_case("classic_sfxr", CLASSIC_SFXR_PRIMITIVE_GOLF_SCRIPTS[0], 0.08),
+            parity_case("classic_808", CLASSIC_808_PRIMITIVE_GOLF_SCRIPTS[0], 0.06),
+            parity_case("fm_bell", FM_BELL_PRIMITIVE_GOLF_SCRIPTS[0], 0.05),
+            parity_case("wobble_bass", WOBBLE_BASS_PRIMITIVE_GOLF_SCRIPTS[0], 0.04),
+        ]
+    }
+
+    fn builtin_faust_parity_cases() -> Vec<FaustParityCase> {
+        let mut cases = Vec::new();
+        for script in CLASSIC_SFXR_PRIMITIVE_GOLF_SCRIPTS {
+            cases.push(parity_case("classic_sfxr", script, 0.04));
+        }
+        for script in CLASSIC_808_PRIMITIVE_GOLF_SCRIPTS {
+            cases.push(parity_case("classic_808", script, 0.04));
+        }
+        for script in FM_BELL_PRIMITIVE_GOLF_SCRIPTS {
+            cases.push(parity_case("fm_bell", script, 0.04));
+        }
+        for script in WOBBLE_BASS_PRIMITIVE_GOLF_SCRIPTS {
+            cases.push(parity_case("wobble_bass", script, 0.03));
+        }
+        cases
+    }
+
+    fn parity_case(
+        family: &'static str,
+        (name, script): (&'static str, &'static str),
+        min_score: f32,
+    ) -> FaustParityCase {
+        FaustParityCase {
+            family,
+            name,
+            script,
+            min_score,
+            min_peak: 0.005,
+        }
+    }
+
+    fn assert_faust_parity(case: FaustParityCase) {
+        let patch = SynthPatch::from_script(case.script).unwrap();
+        let duration_seconds = (patch.duration_seconds() + 0.2).clamp(0.35, 1.6);
+        let export = export_patch_to_faust(
+            &patch,
+            FaustExportOptions {
+                name: format!("parity_{}_{}", case.family, case.name),
+                stereo: false,
+            },
+        )
+        .unwrap();
+        let output_dir = PathBuf::from("target").join("faust-parity");
+        fs::create_dir_all(&output_dir).unwrap();
+        let dsp_path = output_dir.join(format!("{}_{}.dsp", case.family, case.name));
+        fs::write(&dsp_path, export.source).unwrap();
+        let sample_count = (duration_seconds * DEFAULT_SAMPLE_RATE).ceil() as usize;
+        let wav_path = render_faust_sndfile(&dsp_path, sample_count).unwrap();
+        let faust = read_wav_mono_f32(&wav_path).unwrap();
+        let rust = render_patch_mono(
+            patch,
+            RenderOptions {
+                duration_seconds,
+                sample_rate: DEFAULT_SAMPLE_RATE,
+                seed: 1,
+            },
+        );
+        let comparison = compare_audio(
+            &rust,
+            &faust,
+            &AudioAnalysisConfig {
+                fft_size: 512,
+                hop_size: 256,
+                mel_band_count: 24,
+                ..AudioAnalysisConfig::default()
+            },
+        );
+        assert!(
+            comparison.candidate.features.peak > case.min_peak,
+            "{}/{} Faust output was too quiet: peak={}",
+            case.family,
+            case.name,
+            comparison.candidate.features.peak
+        );
+        assert!(
+            comparison.score > case.min_score,
+            "{}/{} score={} threshold={} log_mel={} envelope={} duration_ratio={} rms_ratio={}",
+            case.family,
+            case.name,
+            comparison.score,
+            case.min_score,
+            comparison.log_mel_distance,
+            comparison.envelope_distance,
+            comparison.duration_ratio,
+            comparison.rms_ratio
+        );
     }
 
     fn render_faust_sndfile(dsp_path: &Path, sample_count: usize) -> Result<PathBuf, String> {

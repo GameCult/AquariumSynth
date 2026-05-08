@@ -34,6 +34,15 @@ available, the parity test uses Faust's `faust2sndfile` wrapper to compile an
 exported patch, render a WAV, read it back, and compare it against the Rust
 renderer with the existing audio metrics.
 
+The normal suite runs a representative rendered parity set across SFXR, 808,
+FM bell, and wobble patches. The exhaustive rendered matrix is opt-in because it
+compiles one Faust executable per built-in script:
+
+```powershell
+$env:AQUARIUM_SYNTH_FAUST_EXHAUSTIVE=1
+cargo test faust_sndfile_render_matches_builtin_matrix_when_requested -- --nocapture
+```
+
 ## Partial Lowerings
 
 - Low-pass resonance is mapped to Faust `fi.resonlp`, which is useful but not an

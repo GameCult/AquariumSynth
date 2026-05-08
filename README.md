@@ -25,6 +25,14 @@ FM bell, and wobble patch families through the real compiler. With MSYS2
 `gcc`/`libsndfile` available, the test suite also renders generated Faust audio
 through `faust2sndfile` and compares it against the Rust renderer.
 
+Run the full built-in render parity matrix explicitly when you want the slow
+truth:
+
+```powershell
+$env:AQUARIUM_SYNTH_FAUST_EXHAUSTIVE=1
+cargo test faust_sndfile_render_matches_builtin_matrix_when_requested -- --nocapture
+```
+
 ## Direction
 
 - Keep patches deterministic and cheap enough for interactive UI feedback.
