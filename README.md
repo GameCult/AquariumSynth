@@ -12,11 +12,20 @@ but it deserves a smaller room with less renderer dust in the vents.
 ```powershell
 cargo test
 cargo run --release --example voice_capacity
+cargo run --example export_faust
 ```
+
+`export_faust` writes `.dsp` source files under `target/faust`. The crate does
+not bundle Faust yet; install a Faust compiler or libfaust in the host toolchain
+when we are ready to turn these sources into C++, C#, LLVM, or WASM. Use
+`validate_faust_source_with_command` to compile-check emitted source when
+`faust` is available.
 
 ## Direction
 
 - Keep patches deterministic and cheap enough for interactive UI feedback.
+- Keep the Rust patch language as the authoring, analysis, and prototyping
+  layer; emit Faust source when the graph needs a production DSP backend.
 - Treat agent chirps and control responses as stateful signals, not loose sound
   effects.
 - Preserve analysis hooks so visual systems can map low-frequency energy into
