@@ -29,6 +29,11 @@ When Faust is installed, the test matrix compile-checks every built-in classic
 SFXR, 808, FM bell, and wobble bass primitive script through the real Faust
 compiler.
 
+When MSYS2 UCRT64 `gcc`, `make`, `cmake`, `pkgconf`, and `libsndfile` are
+available, the parity test uses Faust's `faust2sndfile` wrapper to compile an
+exported patch, render a WAV, read it back, and compare it against the Rust
+renderer with the existing audio metrics.
+
 ## Partial Lowerings
 
 - Low-pass resonance is mapped to Faust `fi.resonlp`, which is useful but not an
@@ -44,6 +49,7 @@ code learns to lie.
 
 - Add a C# or C++ emission example for the future Vortice engine path.
 - Build a parity harness that renders Rust output and compiled Faust output,
-  then feeds both into the existing log-mel, envelope, and feature comparison.
-- Replace placeholder sample-hold, phaser, and repeat lowerings with explicit
-  Faust implementations.
+  then feeds the whole built-in matrix into the existing log-mel, envelope, and
+  feature comparison.
+- Tighten low-pass resonance and seeded sample-hold parity where the Faust
+  backend still intentionally differs from the Rust renderer.

@@ -3816,6 +3816,7 @@ fn normalized_env_seconds(value: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn sfxr_mapping_preserves_basic_surface() {
@@ -4525,6 +4526,54 @@ mod tests {
     }
 
     #[test]
+    fn faust_sndfile_render_matches_rust_shape_when_toolchain_available() {
+        if msys_bash().is_none() || find_faust_command().is_none() {
+            return;
+        }
+        let patch = presets::aquarium_pluck();
+        let export = export_patch_to_faust(
+            &patch,
+            FaustExportOptions {
+                name: "parity_pluck".to_owned(),
+                stereo: false,
+            },
+        )
+        .unwrap();
+        let output_dir = PathBuf::from("target").join("faust-parity");
+        fs::create_dir_all(&output_dir).unwrap();
+        let dsp_path = output_dir.join("parity_pluck.dsp");
+        fs::write(&dsp_path, export.source).unwrap();
+        let wav_path = render_faust_sndfile(&dsp_path, 44_100).unwrap();
+        let faust = read_wav_mono_f32(&wav_path).unwrap();
+        let rust = render_patch_mono(
+            patch,
+            RenderOptions {
+                duration_seconds: 1.0,
+                sample_rate: 44_100.0,
+                seed: 1,
+            },
+        );
+        let comparison = compare_audio(
+            &rust,
+            &faust,
+            &AudioAnalysisConfig {
+                fft_size: 512,
+                hop_size: 256,
+                mel_band_count: 24,
+                ..AudioAnalysisConfig::default()
+            },
+        );
+        assert!(comparison.candidate.features.peak > 0.01);
+        assert!(
+            comparison.score > 0.18,
+            "score={} log_mel={} envelope={}",
+            comparison.score,
+            comparison.log_mel_distance,
+            comparison.envelope_distance
+        );
+    }
+
+    #[test]
     fn faust_export_compiles_every_builtin_script_family_when_available() {
         let Some(command) = find_faust_command() else {
             return;
@@ -4566,6 +4615,107 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn msys_bash() -> Option<PathBuf> {
+        [PathBuf::from(r"C:\msys64\usr\bin\bash.exe")]
+            .into_iter()
+            .find(|path| path.is_file())
+    }
+
+    fn render_faust_sndfile(dsp_path: &Path, sample_count: usize) -> Result<PathBuf, String> {
+        let bash = msys_bash().ok_or_else(|| "MSYS2 bash not installed".to_owned())?;
+        let absolute_dsp = absolute_path(dsp_path);
+        let wav_path = absolute_dsp.with_extension("wav");
+        let exe_path = absolute_dsp.with_extension("exe");
+        let msys_dsp = msys_path(&absolute_dsp);
+        let compile = format!(
+            "export PATH='/c/Program Files/Faust/bin:/ucrt64/bin:/usr/bin':$PATH; \
+             ln -sfn '/c/Program Files/Faust/share/faust' /tmp/faustshare; \
+             cd '/c/Program Files/Faust/bin'; \
+             FAUSTARCH=/tmp/faustshare ./faust2sndfile {}",
+            bash_quote(&msys_dsp)
+        );
+        run_bash(&bash, &compile)?;
+        let render = format!(
+            "export PATH='/ucrt64/bin:/usr/bin':$PATH; {} -s {} {}",
+            bash_quote(&msys_path(&exe_path)),
+            sample_count,
+            bash_quote(&msys_path(&wav_path))
+        );
+        run_bash(&bash, &render)?;
+        Ok(wav_path)
+    }
+
+    fn run_bash(bash: &Path, command: &str) -> Result<(), String> {
+        let output = Command::new(bash)
+            .arg("-lc")
+            .arg(command)
+            .output()
+            .map_err(|error| error.to_string())?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ))
+        }
+    }
+
+    fn read_wav_mono_f32(path: &Path) -> Result<Vec<f32>, hound::Error> {
+        let mut reader = hound::WavReader::open(path)?;
+        let spec = reader.spec();
+        let samples = match spec.sample_format {
+            hound::SampleFormat::Float => reader.samples::<f32>().collect::<Result<Vec<_>, _>>()?,
+            hound::SampleFormat::Int if spec.bits_per_sample <= 16 => reader
+                .samples::<i16>()
+                .map(|sample| sample.map(|value| value as f32 / i16::MAX as f32))
+                .collect::<Result<Vec<_>, _>>()?,
+            hound::SampleFormat::Int => reader
+                .samples::<i32>()
+                .map(|sample| {
+                    sample.map(|value| {
+                        let scale = ((1_i64 << (spec.bits_per_sample - 1)) - 1) as f32;
+                        value as f32 / scale
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        if spec.channels <= 1 {
+            Ok(samples)
+        } else {
+            Ok(samples
+                .chunks(spec.channels as usize)
+                .map(|frame| frame.iter().sum::<f32>() / frame.len() as f32)
+                .collect())
+        }
+    }
+
+    fn absolute_path(path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            path.to_owned()
+        } else {
+            env::current_dir().unwrap().join(path)
+        }
+    }
+
+    fn msys_path(path: &Path) -> String {
+        let text = path.to_string_lossy().replace('\\', "/");
+        if text.len() > 2 && text.as_bytes()[1] == b':' {
+            format!(
+                "/{}/{}",
+                text[..1].to_ascii_lowercase(),
+                text[3..].trim_start_matches('/')
+            )
+        } else {
+            text
+        }
+    }
+
+    fn bash_quote(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "'\\''"))
     }
 
     #[test]

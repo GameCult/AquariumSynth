@@ -9,4 +9,5 @@ rustfft = "6"
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
+hound = "3.5.1"
 sfxr = "0.1.4"

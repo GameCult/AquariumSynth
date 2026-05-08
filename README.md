@@ -21,7 +21,9 @@ Faust is installed. Use `validate_faust_source` or
 `compile_faust_source` to write generated backend code.
 
 When Faust is installed, `cargo test` compile-checks the built-in SFXR, 808,
-FM bell, and wobble patch families through the real compiler.
+FM bell, and wobble patch families through the real compiler. With MSYS2
+`gcc`/`libsndfile` available, the test suite also renders generated Faust audio
+through `faust2sndfile` and compares it against the Rust renderer.
 
 ## Direction
 
