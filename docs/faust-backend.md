@@ -15,24 +15,30 @@ host shapes without hand-porting every oscillator.
   location.
 - `validate_faust_source` and `validate_faust_source_with_command` shell out to
   an installed Faust compiler and return status, stdout, and stderr.
+- `compile_faust_source` and `compile_faust_source_with_command` write generated
+  Faust backend output such as C, C++, or Rust source.
 - `examples/export_faust.rs` writes sample `.dsp` files to `target/faust`.
 
-The first lowering covers oscillators, envelopes, pitch motion, vibrato,
-FM index, noise mix, drive, wavefolding, low/high-pass filtering, approximate
-low-pass resonance, formants, tremolo, patch gain, soft clipping, stereo
-duplication, and patch/voice modulators.
+The first lowering covers oscillators, envelopes, repeat age, arpeggio switches,
+pitch motion, vibrato, FM index, sample-hold and periodic modulators, noise mix,
+drive, wavefolding, low/high-pass filtering, approximate low-pass resonance,
+phaser delay, formants, tremolo, patch gain, soft clipping, stereo duplication,
+and patch/voice modulators.
+
+When Faust is installed, the test matrix compile-checks every built-in classic
+SFXR, 808, FM bell, and wobble bass primitive script through the real Faust
+compiler.
 
 ## Partial Lowerings
 
-- Repeat uses absolute Faust time today, so it does not reset oscillator state
-  exactly like the Rust renderer.
-- Phaser is reported but not lowered yet.
-- Arpeggio is reported as approximate.
-- Sample-hold modulation uses smoothed noise as a placeholder until we lower a
-  clocked hold primitive.
+- Low-pass resonance is mapped to Faust `fi.resonlp`, which is useful but not an
+  exact clone of the Rust renderer's one-pole SFXR-style damping.
+- Sample-hold randomness comes from Faust noise latched by an oscillator reset
+  clock, not the Rust renderer's seeded hash slots.
 
-These warnings are part of the public export result on purpose. The backend
-should confess where it is soft, because pretending is how code learns to lie.
+Compatibility caveats should stay visible in this file or the public export
+warnings. The backend should confess where it is soft, because pretending is how
+code learns to lie.
 
 ## Next Steps
 

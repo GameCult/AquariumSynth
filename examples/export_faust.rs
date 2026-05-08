@@ -1,5 +1,6 @@
 use aquarium_synth::{
-    FaustExportOptions, WOBBLE_BASS_PRIMITIVE_GOLF_SCRIPTS, export_patch_to_faust,
+    FaustCompileOptions, FaustExportOptions, FaustTargetLanguage,
+    WOBBLE_BASS_PRIMITIVE_GOLF_SCRIPTS, compile_faust_source, export_patch_to_faust,
     export_script_to_faust, presets, validate_faust_source,
 };
 use std::error::Error;
@@ -18,6 +19,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
     )?;
     fs::write(output_dir.join("aquarium_pluck.dsp"), pluck.source)?;
+    compile_if_possible(
+        "aquarium_pluck",
+        &fs::read_to_string(output_dir.join("aquarium_pluck.dsp"))?,
+        &output_dir.join("aquarium_pluck.cpp"),
+    )?;
     validate_if_possible(
         "aquarium_pluck",
         &fs::read_to_string(output_dir.join("aquarium_pluck.dsp"))?,
@@ -38,6 +44,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         output_dir.join(format!("aquarium_wobble_{name}.dsp")),
         wobble.source,
     )?;
+    compile_if_possible(
+        &format!("aquarium_wobble_{name}"),
+        &fs::read_to_string(output_dir.join(format!("aquarium_wobble_{name}.dsp")))?,
+        &output_dir.join(format!("aquarium_wobble_{name}.cpp")),
+    )?;
     validate_if_possible(
         &format!("aquarium_wobble_{name}"),
         &fs::read_to_string(output_dir.join(format!("aquarium_wobble_{name}.dsp")))?,
@@ -47,6 +58,27 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     println!("wrote Faust DSP files to {}", output_dir.display());
+    Ok(())
+}
+
+fn compile_if_possible(
+    name: &str,
+    source: &str,
+    output_path: &PathBuf,
+) -> Result<(), Box<dyn Error>> {
+    if let Some(validation) = compile_faust_source(
+        source,
+        &FaustCompileOptions {
+            language: FaustTargetLanguage::Cpp,
+            output_path: output_path.clone(),
+        },
+    )? {
+        if validation.success {
+            eprintln!("{name}: wrote {}", output_path.display());
+        } else {
+            return Err(format!("{name}: Faust C++ export failed\n{}", validation.stderr).into());
+        }
+    }
     Ok(())
 }
 

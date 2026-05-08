@@ -992,6 +992,29 @@ pub struct FaustValidation {
     pub stderr: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum FaustTargetLanguage {
+    C,
+    Cpp,
+    Rust,
+}
+
+impl FaustTargetLanguage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::C => "c",
+            Self::Cpp => "cpp",
+            Self::Rust => "rust",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FaustCompileOptions {
+    pub language: FaustTargetLanguage,
+    pub output_path: PathBuf,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FaustExportError {
     message: String,
@@ -1053,9 +1076,30 @@ pub fn validate_faust_source(source: &str) -> Result<Option<FaustValidation>, Fa
         .transpose()
 }
 
+pub fn compile_faust_source(
+    source: &str,
+    options: &FaustCompileOptions,
+) -> Result<Option<FaustValidation>, FaustExportError> {
+    find_faust_command()
+        .map(|command| compile_faust_source_with_command(source, command, options))
+        .transpose()
+}
+
 pub fn validate_faust_source_with_command(
     source: &str,
     faust_command: impl AsRef<OsStr>,
+) -> Result<FaustValidation, FaustExportError> {
+    let options = FaustCompileOptions {
+        language: FaustTargetLanguage::Cpp,
+        output_path: PathBuf::from(if cfg!(windows) { "NUL" } else { "/dev/null" }),
+    };
+    compile_faust_source_with_command(source, faust_command, &options)
+}
+
+pub fn compile_faust_source_with_command(
+    source: &str,
+    faust_command: impl AsRef<OsStr>,
+    options: &FaustCompileOptions,
 ) -> Result<FaustValidation, FaustExportError> {
     let command = faust_command.as_ref();
     let source_path = temporary_faust_path();
@@ -1065,12 +1109,11 @@ pub fn validate_faust_source_with_command(
             source_path.display()
         ))
     })?;
-    let output_path = if cfg!(windows) { "NUL" } else { "/dev/null" };
     let output = Command::new(command)
         .arg("-lang")
-        .arg("cpp")
+        .arg(options.language.as_str())
         .arg("-o")
-        .arg(output_path)
+        .arg(&options.output_path)
         .arg(&source_path)
         .output()
         .map_err(|error| {
@@ -1109,17 +1152,6 @@ impl<'a> FaustEmitter<'a> {
         if self.patch.voices.is_empty() {
             return Err(FaustExportError::new("cannot export an empty patch"));
         }
-        if self.patch.repeat.is_some() {
-            self.warnings
-                .push("patch repeat is represented with absolute Faust time for now".to_owned());
-        }
-        if self.uses_sample_hold_modulators() {
-            self.warnings.push(
-                "sample-hold modulation is lowered as smoothed noise in the first Faust backend"
-                    .to_owned(),
-            );
-        }
-
         let mut source = String::new();
         writeln!(source, "import(\"stdfaust.lib\");").unwrap();
         writeln!(
@@ -1131,6 +1163,17 @@ impl<'a> FaustEmitter<'a> {
         writeln!(source, "declare options \"[nvoices:1]\";").unwrap();
         writeln!(source).unwrap();
         writeln!(source, "time = ba.time / ma.SR;").unwrap();
+        if let Some(repeat) = self.patch.repeat {
+            writeln!(
+                source,
+                "age = time - floor(time / {}) * {};",
+                f32_lit(repeat.interval_seconds.max(0.0001)),
+                f32_lit(repeat.interval_seconds.max(0.0001))
+            )
+            .unwrap();
+        } else {
+            writeln!(source, "age = time;").unwrap();
+        }
         writeln!(source, "clip01(x) = min(1.0, max(0.0, x));").unwrap();
         writeln!(source, "wrap01(x) = x - floor(x);").unwrap();
         writeln!(source, "softclip(x) = ma.tanh(x * 1.35);").unwrap();
@@ -1139,15 +1182,19 @@ impl<'a> FaustEmitter<'a> {
             "fold(x) = 2.0 * abs(2.0 * (x / 4.0 - floor(x / 4.0)) - 1.0) - 1.0;"
         )
         .unwrap();
-        writeln!(source, "env(a,s,d,p) = select2(time < a, select2(time < a + s, select2(time < a + s + d, 0.0, 1.0 - (time - a - s) / max(0.0001, d)), 1.0 + (1.0 - (time - a) / max(0.0001, s)) * 2.0 * p), time / max(0.0001, a));").unwrap();
+        writeln!(source, "env(a,s,d,p) = select2(age < a, select2(age < a + s, select2(age < a + s + d, 0.0, 1.0 - (age - a - s) / max(0.0001, d)), 1.0 + (1.0 - (age - a) / max(0.0001, s)) * 2.0 * p), age / max(0.0001, a));").unwrap();
         writeln!(
             source,
-            "lfo_sin(hz, phase) = sin(2.0 * ma.PI * (time * hz + phase));"
+            "lfo_sin(hz, phase) = sin(2.0 * ma.PI * (age * hz + phase));"
         )
         .unwrap();
-        writeln!(source, "lfo_tri(hz, phase) = 1.0 - 4.0 * abs((time * hz + phase - floor(time * hz + phase)) - 0.5);").unwrap();
-        writeln!(source, "lfo_sq(hz, phase) = select2((time * hz + phase - floor(time * hz + phase)) < 0.5, -1.0, 1.0);").unwrap();
-        writeln!(source, "lfo_hold(hz, phase) = no.noise : si.smoo;").unwrap();
+        writeln!(source, "lfo_tri(hz, phase) = 1.0 - 4.0 * abs((age * hz + phase - floor(age * hz + phase)) - 0.5);").unwrap();
+        writeln!(source, "lfo_sq(hz, phase) = select2((age * hz + phase - floor(age * hz + phase)) < 0.5, -1.0, 1.0);").unwrap();
+        writeln!(
+            source,
+            "lfo_hold(hz, phase) = no.noise : ba.latch(os.oscrs(hz));"
+        )
+        .unwrap();
         writeln!(source).unwrap();
 
         for (target, target_name) in [
@@ -1170,7 +1217,7 @@ impl<'a> FaustEmitter<'a> {
         let mut voice_names = Vec::new();
         for (index, voice) in self.patch.voices.iter().enumerate() {
             let name = format!("voice_{index}");
-            self.emit_voice(&mut source, voice, index, &name)?;
+            self.emit_voice(&mut source, voice, &name)?;
             voice_names.push(name);
         }
         let mix = voice_names
@@ -1200,18 +1247,8 @@ impl<'a> FaustEmitter<'a> {
         &mut self,
         source: &mut String,
         voice: &Voice,
-        index: usize,
         name: &str,
     ) -> Result<(), FaustExportError> {
-        if voice.arpeggio.is_some() {
-            self.warnings
-                .push(format!("{name}: arpeggio lowering is approximate"));
-        }
-        if voice.phaser.offset_seconds != 0.0 || voice.phaser.ramp_seconds_per_second != 0.0 {
-            self.warnings.push(format!(
-                "{name}: phaser is not lowered in the first Faust backend"
-            ));
-        }
         if voice.filter.low_pass_resonance != 0.0 {
             self.warnings.push(format!(
                 "{name}: low-pass resonance is approximated with Faust resonlp"
@@ -1231,7 +1268,7 @@ impl<'a> FaustEmitter<'a> {
         let hpf_mod = local(ModTarget::HighPass);
 
         let base_freq = format!(
-            "max({}, {} * pow(2.0, {} * time + 0.5 * {} * time * time))",
+            "max({}, {} * pow(2.0, {} * age + 0.5 * {} * age * age))",
             f32_lit(voice.pitch.min_frequency_hz),
             f32_lit(voice.oscillator.frequency_hz),
             f32_lit(voice.pitch.ramp_per_second),
@@ -1239,7 +1276,7 @@ impl<'a> FaustEmitter<'a> {
         );
         let vibrato = if voice.pitch.vibrato_depth != 0.0 && voice.pitch.vibrato_hz > 0.0 {
             format!(
-                " * (1.0 + select2(time < {}, 0.0, sin(2.0 * ma.PI * (time - {}) * {}) * {}))",
+                " * (1.0 + select2(age < {}, 0.0, sin(2.0 * ma.PI * (age - {}) * {}) * {}))",
                 f32_lit(voice.pitch.vibrato_delay_seconds),
                 f32_lit(voice.pitch.vibrato_delay_seconds),
                 f32_lit(voice.pitch.vibrato_hz),
@@ -1248,9 +1285,20 @@ impl<'a> FaustEmitter<'a> {
         } else {
             String::new()
         };
-        let frequency = format!("(({base_freq}){vibrato}) * pow(2.0, patch_mod_pitch + {pitch})");
+        let arpeggio = voice.arpeggio.map_or_else(
+            || "1.0".to_owned(),
+            |arpeggio| {
+                format!(
+                    "select2(age < {}, {}, 1.0)",
+                    f32_lit(arpeggio.delay_seconds),
+                    f32_lit(arpeggio.multiplier)
+                )
+            },
+        );
+        let frequency =
+            format!("(({base_freq}){vibrato}) * {arpeggio} * pow(2.0, patch_mod_pitch + {pitch})");
         let duty_expr = format!(
-            "clip01({} + {} * time + patch_mod_duty + {duty})",
+            "clip01({} + {} * age + patch_mod_duty + {duty})",
             f32_lit(voice.oscillator.duty),
             f32_lit(voice.duty.ramp_per_second)
         );
@@ -1293,12 +1341,12 @@ impl<'a> FaustEmitter<'a> {
             f32_lit(voice.color.formant_mix)
         );
         let lpf = format!(
-            "clip01({} * (1.0 + {} * time * 1.8) + patch_mod_lpf + {lpf_mod})",
+            "clip01({} * (1.0 + {} * age * 1.8) + patch_mod_lpf + {lpf_mod})",
             f32_lit(voice.filter.low_pass),
             f32_lit(voice.filter.low_pass_ramp)
         );
         let hpf = format!(
-            "clip01({} * (1.0 + {} * time * 2.0) + patch_mod_hpf + {hpf_mod})",
+            "clip01({} * (1.0 + {} * age * 2.0) + patch_mod_hpf + {hpf_mod})",
             f32_lit(voice.filter.high_pass),
             f32_lit(voice.filter.high_pass_ramp)
         );
@@ -1320,17 +1368,24 @@ impl<'a> FaustEmitter<'a> {
             format!("fi.lowpass(1, max(20.0, {lpf} * 18000.0))")
         };
         writeln!(source, "{name}_filtered = {name}_folded : {lowpass} : fi.highpass(1, max(20.0, {hpf} * 8000.0));").unwrap();
+        if voice.phaser.offset_seconds != 0.0 || voice.phaser.ramp_seconds_per_second != 0.0 {
+            let phaser_delay = format!(
+                "min(2047.0, max(0.0, abs({} + {} * age) * ma.SR))",
+                f32_lit(voice.phaser.offset_seconds),
+                f32_lit(voice.phaser.ramp_seconds_per_second)
+            );
+            writeln!(
+                source,
+                "{name}_phased = {name}_filtered + ({name}_filtered : de.fdelay(2048, {phaser_delay}));"
+            )
+            .unwrap();
+        } else {
+            writeln!(source, "{name}_phased = {name}_filtered;").unwrap();
+        }
         let formant_expr = self.formant_expression(name, voice);
         writeln!(source, "{name}_formants = {formant_expr};").unwrap();
-        writeln!(source, "{name} = (({name}_filtered * (1.0 - {formant_mix}) + {name}_formants * {formant_mix}) * {envelope}{tremolo} * max(0.0, 1.0 + patch_mod_gain + {gain_mod}) * {});", f32_lit(voice.gain)).unwrap();
+        writeln!(source, "{name} = (({name}_phased * (1.0 - {formant_mix}) + {name}_formants * {formant_mix}) * {envelope}{tremolo} * max(0.0, 1.0 + patch_mod_gain + {gain_mod}) * {});", f32_lit(voice.gain)).unwrap();
         writeln!(source).unwrap();
-
-        if index == 0 && !voice.modulators.is_empty() {
-            self.warnings.push(
-                "per-voice modulators are lowered as local Faust expressions; shared buses are preferred for runtime polyphony"
-                    .to_owned(),
-            );
-        }
         Ok(())
     }
 
@@ -1367,7 +1422,7 @@ impl<'a> FaustEmitter<'a> {
 
     fn formant_expression(&self, name: &str, voice: &Voice) -> String {
         if voice.formants.is_empty() {
-            return format!("{name}_filtered");
+            return format!("{name}_phased");
         }
         let gain_sum = voice
             .formants
@@ -1381,7 +1436,7 @@ impl<'a> FaustEmitter<'a> {
             .map(|formant| {
                 let q = (formant.frequency_hz / formant.bandwidth_hz.max(10.0)).clamp(0.2, 40.0);
                 format!(
-                    "({name}_filtered : fi.resonbp({}, {}, 1.0)) * {}",
+                    "({name}_phased : fi.resonbp({}, {}, 1.0)) * {}",
                     f32_lit(formant.frequency_hz),
                     f32_lit(q),
                     f32_lit(formant.gain)
@@ -1431,19 +1486,6 @@ impl<'a> FaustEmitter<'a> {
                 .any(|modulator| modulator.target == target)
     }
 
-    fn uses_sample_hold_modulators(&self) -> bool {
-        self.patch
-            .controls
-            .iter()
-            .any(|control| control.modulator.waveform == ModWaveform::SampleHold)
-            || self.patch.voices.iter().any(|voice| {
-                voice
-                    .modulators
-                    .iter()
-                    .any(|modulator| modulator.waveform == ModWaveform::SampleHold)
-            })
-    }
-
     fn modulator_expression(&self, modulator: &Modulator) -> String {
         let wave = match modulator.waveform {
             ModWaveform::Sine => "lfo_sin",
@@ -1463,7 +1505,7 @@ impl<'a> FaustEmitter<'a> {
 
 fn fm_decay_expr(seconds: f32) -> String {
     if seconds > 0.0 {
-        format!("exp(-time / {})", f32_lit(seconds.max(0.0001)))
+        format!("exp(-age / {})", f32_lit(seconds.max(0.0001)))
     } else {
         "1.0".to_owned()
     }
@@ -4455,6 +4497,75 @@ mod tests {
             "{}\n{}",
             validation.stdout, validation.stderr
         );
+    }
+
+    #[test]
+    fn faust_compile_writes_output_when_compiler_is_available() {
+        if find_faust_command().is_none() {
+            return;
+        }
+        let export = export_script_to_faust(
+            CLASSIC_SFXR_PRIMITIVE_GOLF_SCRIPTS[0].1,
+            FaustExportOptions::default(),
+        )
+        .unwrap();
+        let output_path = temporary_faust_path().with_extension("cpp");
+        let validation = compile_faust_source(
+            &export.source,
+            &FaustCompileOptions {
+                language: FaustTargetLanguage::Cpp,
+                output_path: output_path.clone(),
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert!(validation.success, "{}", validation.stderr);
+        assert!(output_path.is_file());
+        let _ = fs::remove_file(output_path);
+    }
+
+    #[test]
+    fn faust_export_compiles_every_builtin_script_family_when_available() {
+        let Some(command) = find_faust_command() else {
+            return;
+        };
+        let script_families = [
+            (
+                "classic_sfxr",
+                CLASSIC_SFXR_PRIMITIVE_GOLF_SCRIPTS.as_slice(),
+            ),
+            ("classic_808", CLASSIC_808_PRIMITIVE_GOLF_SCRIPTS.as_slice()),
+            ("fm_bell", FM_BELL_PRIMITIVE_GOLF_SCRIPTS.as_slice()),
+            ("wobble_bass", WOBBLE_BASS_PRIMITIVE_GOLF_SCRIPTS.as_slice()),
+        ];
+        for (family, scripts) in script_families {
+            for (name, script) in scripts {
+                let export = export_script_to_faust(
+                    script,
+                    FaustExportOptions {
+                        name: format!("{family}_{name}"),
+                        stereo: false,
+                    },
+                )
+                .unwrap();
+                for warning in &export.warnings {
+                    assert!(
+                        !warning.contains("not lowered")
+                            && !warning.contains("sample-hold")
+                            && !warning.contains("repeat")
+                            && !warning.contains("arpeggio"),
+                        "{family}/{name} carried stale Faust warning: {warning}"
+                    );
+                }
+                let validation =
+                    validate_faust_source_with_command(&export.source, &command).unwrap();
+                assert!(
+                    validation.success,
+                    "{family}/{name} failed Faust validation with {}\n{}\n{}",
+                    validation.command, validation.stdout, validation.stderr
+                );
+            }
+        }
     }
 
     #[test]

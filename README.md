@@ -15,11 +15,13 @@ cargo run --release --example voice_capacity
 cargo run --example export_faust
 ```
 
-`export_faust` writes `.dsp` source files under `target/faust`. The crate does
-not bundle Faust yet; install a Faust compiler or libfaust in the host toolchain
-when we are ready to turn these sources into C++, C#, LLVM, or WASM. Use
-`validate_faust_source` or `validate_faust_source_with_command` to compile-check
-emitted source when Faust is available.
+`export_faust` writes `.dsp` and `.cpp` source files under `target/faust` when
+Faust is installed. Use `validate_faust_source` or
+`validate_faust_source_with_command` to compile-check emitted source, and
+`compile_faust_source` to write generated backend code.
+
+When Faust is installed, `cargo test` compile-checks the built-in SFXR, 808,
+FM bell, and wobble patch families through the real compiler.
 
 ## Direction
 
