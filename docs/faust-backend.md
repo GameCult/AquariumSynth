@@ -11,8 +11,10 @@ host shapes without hand-porting every oscillator.
 - `export_script_to_faust(&str, FaustExportOptions)` parses patch script first,
   then emits Faust source.
 - `FaustExport` returns the generated source plus warnings for partial lowerings.
-- `validate_faust_source_with_command` shells out to an installed Faust compiler
-  and returns status, stdout, and stderr.
+- `find_faust_command` finds `faust` on PATH or the default Windows installer
+  location.
+- `validate_faust_source` and `validate_faust_source_with_command` shell out to
+  an installed Faust compiler and return status, stdout, and stderr.
 - `examples/export_faust.rs` writes sample `.dsp` files to `target/faust`.
 
 The first lowering covers oscillators, envelopes, pitch motion, vibrato,

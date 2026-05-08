@@ -1029,6 +1029,30 @@ pub fn export_script_to_faust(
     export_patch_to_faust(&patch, options)
 }
 
+pub fn find_faust_command() -> Option<PathBuf> {
+    if command_is_available("faust") {
+        return Some(PathBuf::from("faust"));
+    }
+    #[cfg(windows)]
+    {
+        let candidates = [
+            PathBuf::from(r"C:\Program Files\Faust\bin\faust.exe"),
+            PathBuf::from(r"C:\Program Files (x86)\Faust\bin\faust.exe"),
+        ];
+        candidates.into_iter().find(|path| path.is_file())
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+pub fn validate_faust_source(source: &str) -> Result<Option<FaustValidation>, FaustExportError> {
+    find_faust_command()
+        .map(|command| validate_faust_source_with_command(source, command))
+        .transpose()
+}
+
 pub fn validate_faust_source_with_command(
     source: &str,
     faust_command: impl AsRef<OsStr>,
@@ -1109,7 +1133,7 @@ impl<'a> FaustEmitter<'a> {
         writeln!(source, "time = ba.time / ma.SR;").unwrap();
         writeln!(source, "clip01(x) = min(1.0, max(0.0, x));").unwrap();
         writeln!(source, "wrap01(x) = x - floor(x);").unwrap();
-        writeln!(source, "softclip(x) = tanh(x * 1.35);").unwrap();
+        writeln!(source, "softclip(x) = ma.tanh(x * 1.35);").unwrap();
         writeln!(
             source,
             "fold(x) = 2.0 * abs(2.0 * (x / 4.0 - floor(x / 4.0)) - 1.0) - 1.0;"
@@ -1151,7 +1175,7 @@ impl<'a> FaustEmitter<'a> {
         }
         let mix = voice_names
             .iter()
-            .map(|name| format!("{name}()"))
+            .map(|name| name.to_owned())
             .collect::<Vec<_>>()
             .join(" + ");
         let gained = format!("({mix}) * {}", f32_lit(self.patch.gain));
@@ -1285,7 +1309,7 @@ impl<'a> FaustEmitter<'a> {
             "{name}_colored = ({name}_osc * (1.0 - {noise_mix}) + no.noise * {noise_mix});"
         )
         .unwrap();
-        writeln!(source, "{name}_driven = tanh({name}_colored * (1.0 + {drive} * 12.0)) / tanh(1.0 + {drive} * 12.0);").unwrap();
+        writeln!(source, "{name}_driven = ma.tanh({name}_colored * (1.0 + {drive} * 12.0)) / ma.tanh(1.0 + {drive} * 12.0);").unwrap();
         writeln!(source, "{name}_folded = {name}_driven * (1.0 - {fold}) + fold({name}_driven * (1.0 + {fold} * 3.5)) * {fold};").unwrap();
         let lowpass = if voice.filter.low_pass_resonance > 0.0 {
             format!(
@@ -1298,7 +1322,7 @@ impl<'a> FaustEmitter<'a> {
         writeln!(source, "{name}_filtered = {name}_folded : {lowpass} : fi.highpass(1, max(20.0, {hpf} * 8000.0));").unwrap();
         let formant_expr = self.formant_expression(name, voice);
         writeln!(source, "{name}_formants = {formant_expr};").unwrap();
-        writeln!(source, "{name}() = (({name}_filtered * (1.0 - {formant_mix}) + {name}_formants * {formant_mix}) * {envelope}{tremolo} * max(0.0, 1.0 + patch_mod_gain + {gain_mod}) * {});", f32_lit(voice.gain)).unwrap();
+        writeln!(source, "{name} = (({name}_filtered * (1.0 - {formant_mix}) + {name}_formants * {formant_mix}) * {envelope}{tremolo} * max(0.0, 1.0 + patch_mod_gain + {gain_mod}) * {});", f32_lit(voice.gain)).unwrap();
         writeln!(source).unwrap();
 
         if index == 0 && !voice.modulators.is_empty() {
@@ -1455,6 +1479,10 @@ fn temporary_faust_path() -> PathBuf {
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
     env::temp_dir().join(format!("aquarium-synth-{}-{stamp}.dsp", id()))
+}
+
+fn command_is_available(command: &str) -> bool {
+    Command::new(command).arg("-v").output().is_ok()
 }
 
 fn f32_lit(value: f32) -> String {
@@ -4416,14 +4444,17 @@ mod tests {
 
     #[test]
     fn faust_validation_uses_installed_compiler_when_available() {
-        if Command::new("faust").arg("-v").output().is_err() {
-            return;
-        }
         let export =
             export_patch_to_faust(&presets::aquarium_pluck(), FaustExportOptions::default())
                 .unwrap();
-        let validation = validate_faust_source_with_command(&export.source, "faust").unwrap();
-        assert!(validation.success, "{}", validation.stderr);
+        let Some(validation) = validate_faust_source(&export.source).unwrap() else {
+            return;
+        };
+        assert!(
+            validation.success,
+            "{}\n{}",
+            validation.stdout, validation.stderr
+        );
     }
 
     #[test]
